@@ -1,24 +1,26 @@
+use std::ops::Mul;
+
 use crate::{
     error::Error,
     hasher::HashToCurve,
     utils::{same_ratio, seeded_rng, serialize},
 };
-use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, SerializationError, Write};
+use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Debug, Clone, Copy, PartialEq)]
-pub struct RatioProof<E: PairingEngine> {
+pub struct RatioProof<E: Pairing> {
     pub point: E::G1Affine,
     pub matching_point: E::G2Affine,
 }
 
-impl<E: PairingEngine> RatioProof<E> {
+impl<E: Pairing> RatioProof<E> {
     pub fn get_g1(&self) -> (E::G1Affine, E::G1Affine) {
-        (E::G1Affine::prime_subgroup_generator(), self.point)
+        (E::G1Affine::generator(), self.point)
     }
 
-    pub fn generate(delta: E::Fr, challenge: &[u8]) -> Result<Self, Error> {
-        let generator: E::G1Affine = E::G1Affine::prime_subgroup_generator();
+    pub fn generate(delta: E::ScalarField, challenge: &[u8]) -> Result<Self, Error> {
+        let generator: E::G1Affine = E::G1Affine::generator();
         let point_scaled: E::G1Affine = generator.mul(delta).into_affine();
         let matching_point_scaled = HashToCurve::<E>::hash_g2(&mut seeded_rng(
             &challenge
@@ -37,7 +39,7 @@ impl<E: PairingEngine> RatioProof<E> {
     }
 
     pub fn verify(&self, challenge: &[u8]) -> Result<bool, Error> {
-        let generator = E::G1Affine::prime_subgroup_generator();
+        let generator = E::G1Affine::generator();
         let challenge_point = HashToCurve::<E>::hash_g2(&mut seeded_rng(
             &challenge
                 .iter()
