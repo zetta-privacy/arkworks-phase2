@@ -9,6 +9,7 @@ use ark_groth16::{ProvingKey, VerifyingKey};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_relations::gr1cs::{
     ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, SynthesisError,
+    R1CS_PREDICATE_LABEL,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{cfg_iter, end_timer, start_timer};
@@ -46,8 +47,10 @@ impl<E: Pairing> Transcript<E> {
         let num_constraints = cs.num_constraints();
         let num_instance_variables = cs.num_instance_variables();
         let total_constraints = num_constraints + num_instance_variables;
-        let matrices_map = cs.to_matrices()?;
-        let r1cs_matrices = matrices_map.get("R1CS").ok_or(Error::MissingCSMatrices)?;
+        let matrices = cs.to_matrices()?;
+        let r1cs_matrices = matrices
+            .get(R1CS_PREDICATE_LABEL)
+            .ok_or(Error::MissingCSMatrices)?;
         let (a, b, c) = (&r1cs_matrices[0], &r1cs_matrices[1], &r1cs_matrices[2]);
 
         let (valid, len) = accum.check_pow_len();

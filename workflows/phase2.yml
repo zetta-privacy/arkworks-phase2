@@ -1,0 +1,29 @@
+name: Phase 2 Contribution
+
+on:
+  push:
+    paths:
+      - 'list.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  contribute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run contribution
+        run: cargo run --release
+
+      - name: Commit phase2 files
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: phase2 contribution"
+          file_pattern: 'phase2/*'

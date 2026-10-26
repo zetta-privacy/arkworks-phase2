@@ -1,5 +1,5 @@
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
-use ark_ff::{BigInteger, One, PrimeField, UniformRand};
+use ark_ff::{BigInteger, Field, One, PrimeField, UniformRand};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_relations::gr1cs::SynthesisError;
 use ark_std::{add_to_trace, cfg_into_iter, cfg_iter_mut, end_timer, start_timer};
@@ -18,7 +18,7 @@ use rayon::prelude::*;
 
 use crate::{
     error::Error,
-    reader::PairingReader,
+    reader::{montgomery_r, montgomery_r_inv, write_ptau_g1, write_ptau_g2, PairingReader},
     utils::{batch_into_affine, batch_into_projective},
 };
 
@@ -171,6 +171,69 @@ impl<E: Pairing> Accumulator<E> {
         };
         Ok(Self::empty((g2_powers << 1) - 1, g2_powers))
     }
+
+    pub fn write_ptau_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>
+    where
+        E::G1Affine: AffineRepr<BaseField = E::BaseField>,
+        <E::G2Affine as AffineRepr>::BaseField: Field<BasePrimeField = E::BaseField>,
+    {
+        use std::io::Write;
+
+        let g2_len = self.tau_powers_g2.len();
+        let power = ark_std::log2(g2_len);
+        let r = montgomery_r::<E::BaseField>();
+
+        let mut header = vec![];
+        let modulus = <E::BaseField as PrimeField>::MODULUS.to_bytes_le();
+        header.extend_from_slice(&(modulus.len() as u32).to_le_bytes());
+        header.extend_from_slice(&modulus);
+        header.extend_from_slice(&(power as u32).to_le_bytes());
+        header.extend_from_slice(&(power as u32).to_le_bytes());
+
+        let tau_g1: Vec<u8> = self
+            .tau_powers_g1
+            .iter()
+            .flat_map(|p| write_ptau_g1::<E>(p, &r))
+            .collect();
+        let tau_g2: Vec<u8> = self
+            .tau_powers_g2
+            .iter()
+            .flat_map(|p| write_ptau_g2::<E>(p, &r))
+            .collect();
+        let alpha: Vec<u8> = self
+            .alpha_tau_powers_g1
+            .iter()
+            .flat_map(|p| write_ptau_g1::<E>(p, &r))
+            .collect();
+        let beta_g1: Vec<u8> = self
+            .beta_tau_powers_g1
+            .iter()
+            .flat_map(|p| write_ptau_g1::<E>(p, &r))
+            .collect();
+        let beta_g2 = write_ptau_g2::<E>(&self.beta_g2, &r);
+        let ceremony = 1u32.to_le_bytes().to_vec();
+
+        let sections: [(u32, &[u8]); 7] = [
+            (1, &header),
+            (2, &tau_g1),
+            (3, &tau_g2),
+            (4, &alpha),
+            (5, &beta_g1),
+            (6, &beta_g2),
+            (7, &ceremony),
+        ];
+
+        let mut f = File::create(path)?;
+        f.write_all(b"ptau")?;
+        f.write_all(&1u32.to_le_bytes())?;
+        f.write_all(&(sections.len() as u32).to_le_bytes())?;
+        for (ty, data) in &sections {
+            f.write_all(&(*ty as u32).to_le_bytes())?;
+            f.write_all(&(data.len() as u64).to_le_bytes())?;
+            f.write_all(data)?;
+        }
+        Ok(())
+    }
 }
 
 impl<E: Pairing + PairingReader> Accumulator<E> {
@@ -270,9 +333,11 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
             .expect("tau_g1 not found");
         reader.seek(SeekFrom::Start(tau_g1_sec.0))?;
 
+        let r_inv = montgomery_r_inv::<E::BaseField>();
+
         let tau_g1_timer = start_timer!(|| "Reading tau g1");
         let tau_g1 = (0..n_tau_g1s)
-            .map(|_| E::read_ptau_g1(&mut reader))
+            .map(|_| E::read_ptau_g1(&mut reader, &r_inv))
             .collect::<Result<Vec<_>, _>>()?;
         end_timer!(tau_g1_timer);
 
@@ -284,7 +349,7 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
 
         let tau_g2_timer = start_timer!(|| "Reading tau g2");
         let tau_g2 = (0..n_tau_g2s)
-            .map(|_| E::read_ptau_g2(&mut reader))
+            .map(|_| E::read_ptau_g2(&mut reader, &r_inv))
             .collect::<Result<Vec<_>, _>>()?;
         end_timer!(tau_g2_timer);
 
@@ -296,7 +361,7 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
 
         let alpha_tau_g1_timer = start_timer!(|| "Reading alpha tau g1");
         let alpha_tau_g1 = (0..n_tau_g2s)
-            .map(|_| E::read_ptau_g1(&mut reader))
+            .map(|_| E::read_ptau_g1(&mut reader, &r_inv))
             .collect::<Result<Vec<_>, _>>()?;
         end_timer!(alpha_tau_g1_timer);
 
@@ -308,7 +373,7 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
 
         let beta_tau_g1_timer = start_timer!(|| "Reading beta tau g1");
         let beta_tau_g1 = (0..n_tau_g2s)
-            .map(|_| E::read_ptau_g1(&mut reader))
+            .map(|_| E::read_ptau_g1(&mut reader, &r_inv))
             .collect::<Result<Vec<_>, _>>()?;
         end_timer!(beta_tau_g1_timer);
 
@@ -319,7 +384,7 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
         reader.seek(SeekFrom::Start(beta_g2_sec.0))?;
 
         let beta_g2_timer = start_timer!(|| "Reading beta g2");
-        let beta_g2 = E::read_ptau_g2(&mut reader)?;
+        let beta_g2 = E::read_ptau_g2(&mut reader, &r_inv)?;
         end_timer!(beta_g2_timer);
 
         end_timer!(element_timer);
@@ -345,7 +410,7 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
                 .last()
                 .and_then(|p| {
                     p.to_str()
-                        .and_then(|e| e.split("phase1radix2m").last())
+                        .and_then(|e| e.split("test/phase1radix2m").last())
                         .and_then(|e| e.parse::<usize>().ok())
                 })
                 .ok_or(crate::error::Error::Read(String::from(
@@ -465,7 +530,7 @@ impl<E: Pairing + PairingReader> PreparedAccumulator<E> {
                 .last()
                 .and_then(|p| {
                     p.to_str()
-                        .and_then(|e| e.split("phase1radix2m").last())
+                        .and_then(|e| e.split("test/phase1radix2m").last())
                         .and_then(|e| e.parse::<usize>().ok())
                 })
                 .ok_or(crate::error::Error::Read(String::from(
@@ -572,7 +637,7 @@ mod tests {
     #[test]
     fn from_ptau_file_works() -> Result<(), Box<dyn Error>> {
         let rng = &mut OsRng;
-        let ptau_path = "pot8.ptau";
+        let ptau_path = "test/pot8.ptau";
 
         let accum = Accumulator::<Bn254>::from_ptau_file(ptau_path)?;
         let transcript = Transcript::new_from_accumulator(
@@ -606,7 +671,7 @@ mod tests {
     #[test]
     fn from_radix_bn254_file_works() -> Result<(), Box<dyn Error>> {
         let rng = &mut OsRng;
-        let radix_path = "bn254phase1radix2m2";
+        let radix_path = "test/bn254phase1radix2m2";
 
         let accum = PreparedAccumulator::<Bn254>::from_radix_file(radix_path)?;
         let transcript = Transcript::new_from_prepared_accumulator(
