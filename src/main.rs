@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ark_bn254::Bn254;
+use ark_groth16::{ProvingKey, VerifyingKey};
 use ark_serialize::CanonicalDeserialize;
 use arkworks_phase2::accumulator::Accumulator;
 use arkworks_phase2::key::PartialKey;
@@ -34,6 +35,10 @@ enum Command {
         circuit: Circuit,
     },
     Finalize {
+        #[arg(long)]
+        circuit: Circuit,
+    },
+    GenArtifacts {
         #[arg(long)]
         circuit: Circuit,
     },
@@ -78,31 +83,33 @@ fn init(power: usize, ptau: &Path) -> Result<(), Box<dyn Error>> {
     let accum = Accumulator::<Bn254>::from_ptau_file(ptau)?;
     let prepared = accum.prepare_with_size(1 << power)?; // FFTs once
 
-    for circuit in [Circuit::Root] {
-        let transcript = match circuit {
-            Circuit::Root => {
-                Transcript::new_from_prepared_accumulator(&prepared, zkp::root_decider_circuit()?)?
-            }
-            // Circuit::Withdraw => Transcript::new_from_prepared_accumulator(
-            //     &prepared,
-            //     zkp::withdraw_decider_circuit()?,
-            // )?,
-            _ => continue,
-        };
+    for circuit in [Circuit::Root, Circuit::Withdraw] {
         let d = dir(circuit);
         fs::create_dir_all(&d)?;
 
-        // coordinator keeps the full transcript (static a/b queries live here)
+        let transcript = match circuit {
+            Circuit::Root => {
+                let setup = zkp::RootSetup::new()?;
+                let c = setup.decider_circuit();
+                setup.save(&d.join("setup.bin"))?;
+                Transcript::new_from_prepared_accumulator(&prepared, c)?
+            }
+            Circuit::Withdraw => {
+                let setup = zkp::WithdrawSetup::new()?;
+                let c = setup.decider_circuit();
+                setup.save(&d.join("setup.bin"))?;
+                Transcript::new_from_prepared_accumulator(&prepared, c)?
+            }
+        };
+
         fs::write(
             d.join("transcript.bin"),
             serialize_uncompressed(&transcript)?,
         )?;
-        // participants only touch the PartialKey (delta + h_query + l_query)
         fs::write(
             d.join("current_key.bin"),
             serialize_uncompressed(&transcript.initial_key)?,
         )?;
-        // contribution chain
         let empty: Vec<PublicKey<Bn254>> = vec![];
         fs::write(d.join("contributions.bin"), serialize_uncompressed(&empty)?)?;
     }
@@ -162,10 +169,16 @@ fn finalize(circuit: Circuit) -> Result<(), Box<dyn Error>> {
 
     transcript.verify()?;
 
+    // pk = full ProvingKey (large), vk = VerifyingKey (small)
     fs::write(
-        d.join("final_transcript.bin"),
-        serialize_uncompressed(&transcript)?,
+        d.join("proving_key.bin"),
+        serialize_uncompressed(&transcript.key.key)?,
     )?;
+    fs::write(
+        d.join("verifying_key.bin"),
+        serialize_uncompressed(&transcript.key.key.vk)?,
+    )?;
+
     Ok(())
 }
 
@@ -208,12 +221,64 @@ fn download_pse_ptau(power: usize, output: &Path) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+fn gen_artifacts(circuit: Circuit) -> Result<(), Box<dyn Error>> {
+    let d = dir(circuit);
+
+    let pk: ProvingKey<Bn254> = {
+        let b = fs::read(d.join("proving_key.bin"))?;
+        ProvingKey::deserialize_uncompressed(&b[..])?
+    };
+    let vk: VerifyingKey<Bn254> = {
+        let b = fs::read(d.join("verifying_key.bin"))?;
+        VerifyingKey::deserialize_uncompressed(&b[..])?
+    };
+
+    fs::create_dir_all("artifacts")?;
+
+    match circuit {
+        Circuit::Root => {
+            let setup = zkp::RootSetup::load(&d.join("setup.bin"))?;
+            let params = setup.finish(pk, vk);
+            zkp::write_root_params(Path::new("artifacts"), &params)?;
+        }
+        Circuit::Withdraw => {
+            let setup = zkp::WithdrawSetup::load(&d.join("setup.bin"))?;
+            let params = setup.finish(pk, vk);
+            zkp::write_withdraw_params(Path::new("artifacts"), &params)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
         Command::Init { power, ptau } => init(power, &ptau),
         Command::Contribute { circuit } => contribute(circuit),
         Command::Finalize { circuit } => finalize(circuit),
+        Command::GenArtifacts { circuit } => gen_artifacts(circuit),
         Command::GenPtau { power, output } => gen_dev_ptau(power, &output),
         Command::DownloadPtau { power, output } => download_pse_ptau(power, &output),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use zkp::RootSetup;
+
+    #[test]
+    fn root_setup_roundtrip() {
+        let setup = RootSetup::new().unwrap();
+        setup
+            .save(std::path::Path::new("/tmp/root_setup.bin"))
+            .unwrap();
+        let loaded = RootSetup::load(std::path::Path::new("/tmp/root_setup.bin")).unwrap();
+
+        assert_eq!(
+            setup.nova_vp.pp_hash().unwrap(),
+            loaded.nova_vp.pp_hash().unwrap()
+        );
+
+        let _c = setup.decider_circuit(); // must not panic
     }
 }

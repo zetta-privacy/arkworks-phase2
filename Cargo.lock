@@ -4470,7 +4470,7 @@ dependencies = [
 [[package]]
 name = "zkp"
 version = "0.1.0"
-source = "git+https://github.com/zetta-privacy/zetta?rev=c607715d92b06c01328675c91d2c82d7e0f85360#c607715d92b06c01328675c91d2c82d7e0f85360"
+source = "git+https://github.com/zetta-privacy/zetta?rev=7803a526c7ecf9356e7a1c0dba4a7b25534aef84#7803a526c7ecf9356e7a1c0dba4a7b25534aef84"
 dependencies = [
  "ark-bn254",
  "ark-ec",
