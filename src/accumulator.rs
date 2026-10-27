@@ -2,7 +2,7 @@ use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, Field, One, PrimeField, UniformRand};
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_relations::gr1cs::SynthesisError;
-use ark_std::{add_to_trace, cfg_into_iter, cfg_iter_mut, end_timer, start_timer};
+use ark_std::{add_to_trace, cfg_chunks, cfg_into_iter, cfg_iter_mut, end_timer, start_timer};
 use rand::Rng;
 use std::{
     collections::BTreeMap,
@@ -52,21 +52,25 @@ impl<E: Pairing> Accumulator<E> {
         end_timer!(h_query_timer);
 
         let tau_lagrange_g1_timer = start_timer!(|| "Computing inverse fft to tau_lagrange_g1");
-        let tau_lagrange_g1 = domain.ifft(&batch_into_projective(&self.tau_powers_g1[..size]));
+        let tau_lagrange_g1 =
+            batch_into_affine(&domain.ifft(&batch_into_projective(&self.tau_powers_g1[..size])));
         end_timer!(tau_lagrange_g1_timer);
 
         let tau_lagrange_g2_timer = start_timer!(|| "Computing inverse fft to tau_lagrange_g2");
-        let tau_lagrange_g2 = domain.ifft(&batch_into_projective(&self.tau_powers_g2[..size]));
+        let tau_lagrange_g2 =
+            batch_into_affine(&domain.ifft(&batch_into_projective(&self.tau_powers_g2[..size])));
         end_timer!(tau_lagrange_g2_timer);
 
         let alpha_lagrange_g1_timer = start_timer!(|| "Computing inverse fft to alpha_lagrange_g1");
-        let alpha_lagrange_g1 =
-            domain.ifft(&batch_into_projective(&self.alpha_tau_powers_g1[..size]));
+        let alpha_lagrange_g1 = batch_into_affine(
+            &domain.ifft(&batch_into_projective(&self.alpha_tau_powers_g1[..size])),
+        );
         end_timer!(alpha_lagrange_g1_timer);
 
         let beta_lagrange_g1_timer = start_timer!(|| "Computing inverse fft to beta_lagrange_g1");
-        let beta_lagrange_g1 =
-            domain.ifft(&batch_into_projective(&self.beta_tau_powers_g1[..size]));
+        let beta_lagrange_g1 = batch_into_affine(
+            &domain.ifft(&batch_into_projective(&self.beta_tau_powers_g1[..size])),
+        );
         end_timer!(beta_lagrange_g1_timer);
 
         end_timer!(timer);
@@ -336,9 +340,12 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
         let r_inv = montgomery_r_inv::<E::BaseField>();
 
         let tau_g1_timer = start_timer!(|| "Reading tau g1");
-        let tau_g1 = (0..n_tau_g1s)
-            .map(|_| E::read_ptau_g1(&mut reader, &r_inv))
+        let mut raw = vec![0u8; n_tau_g1s * 64];
+        reader.read_exact(&mut raw)?;
+        let tau_g1 = cfg_chunks!(raw, 64)
+            .map(|c| E::parse_ptau_g1(c, &r_inv))
             .collect::<Result<Vec<_>, _>>()?;
+
         end_timer!(tau_g1_timer);
 
         let tau_g2_sec = section
@@ -497,10 +504,10 @@ impl<E: Pairing + PairingReader> Accumulator<E> {
 pub struct PreparedAccumulator<E: Pairing> {
     pub alpha: E::G1Affine,
     pub beta: E::G1Affine,
-    pub tau_lagrange_g1: Vec<E::G1>,
-    pub tau_lagrange_g2: Vec<E::G2>,
-    pub alpha_lagrange_g1: Vec<E::G1>,
-    pub beta_lagrange_g1: Vec<E::G1>,
+    pub tau_lagrange_g1: Vec<E::G1Affine>,
+    pub tau_lagrange_g2: Vec<E::G2Affine>,
+    pub alpha_lagrange_g1: Vec<E::G1Affine>,
+    pub beta_lagrange_g1: Vec<E::G1Affine>,
     pub beta_g2: E::G2Affine,
     pub h_query: Vec<E::G1Affine>,
 }
@@ -583,10 +590,10 @@ impl<E: Pairing + PairingReader> PreparedAccumulator<E> {
         Ok(PreparedAccumulator {
             alpha,
             beta,
-            tau_lagrange_g1: batch_into_projective(&tau_lagrange_g1),
-            tau_lagrange_g2: batch_into_projective(&tau_lagrange_g2),
-            alpha_lagrange_g1: batch_into_projective(&alpha_lagrange_g1),
-            beta_lagrange_g1: batch_into_projective(&beta_lagrange_g1),
+            tau_lagrange_g1,
+            tau_lagrange_g2,
+            alpha_lagrange_g1,
+            beta_lagrange_g1,
             beta_g2,
             h_query,
         })

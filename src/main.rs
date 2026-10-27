@@ -23,6 +23,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Init {
+        /// power of two (e.g. 24 = 2^24 constraints)
+        #[arg(long)]
+        power: usize,
         #[arg(long)]
         ptau: PathBuf,
     },
@@ -71,27 +74,21 @@ fn dir(circuit: Circuit) -> PathBuf {
     Path::new(PHASE2_DIR).join(circuit.name())
 }
 
-fn new_transcript(
-    accum: &Accumulator<Bn254>,
-    circuit: Circuit,
-) -> Result<Transcript<Bn254>, Box<dyn Error>> {
-    match circuit {
-        Circuit::Root => Ok(Transcript::new_from_accumulator(
-            accum,
-            zkp::root_decider_circuit()?,
-        )?),
-        Circuit::Withdraw => Ok(Transcript::new_from_accumulator(
-            accum,
-            zkp::withdraw_decider_circuit()?,
-        )?),
-    }
-}
-
-fn init(ptau: &Path) -> Result<(), Box<dyn Error>> {
+fn init(power: usize, ptau: &Path) -> Result<(), Box<dyn Error>> {
     let accum = Accumulator::<Bn254>::from_ptau_file(ptau)?;
+    let prepared = accum.prepare_with_size(1 << power)?; // FFTs once
 
-    for circuit in [Circuit::Root, Circuit::Withdraw] {
-        let transcript = new_transcript(&accum, circuit)?;
+    for circuit in [Circuit::Root] {
+        let transcript = match circuit {
+            Circuit::Root => {
+                Transcript::new_from_prepared_accumulator(&prepared, zkp::root_decider_circuit()?)?
+            }
+            // Circuit::Withdraw => Transcript::new_from_prepared_accumulator(
+            //     &prepared,
+            //     zkp::withdraw_decider_circuit()?,
+            // )?,
+            _ => continue,
+        };
         let d = dir(circuit);
         fs::create_dir_all(&d)?;
 
@@ -213,7 +210,7 @@ fn download_pse_ptau(power: usize, output: &Path) -> Result<(), Box<dyn Error>> 
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
-        Command::Init { ptau } => init(&ptau),
+        Command::Init { power, ptau } => init(power, &ptau),
         Command::Contribute { circuit } => contribute(circuit),
         Command::Finalize { circuit } => finalize(circuit),
         Command::GenPtau { power, output } => gen_dev_ptau(power, &output),

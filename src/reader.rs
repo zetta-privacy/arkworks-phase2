@@ -16,6 +16,9 @@ pub fn montgomery_r<F: PrimeField>() -> F {
 }
 
 pub trait PairingReader: Pairing {
+    fn parse_ptau_g1(bytes: &[u8], r_inv: &Self::BaseField) -> Result<Self::G1Affine, Error>;
+    fn parse_ptau_g2(bytes: &[u8], r_inv: &Self::BaseField) -> Result<Self::G2Affine, Error>;
+
     fn read_ptau_g1<R: Read>(
         reader: &mut R,
         r_inv: &Self::BaseField,
@@ -30,6 +33,28 @@ pub trait PairingReader: Pairing {
 }
 
 impl<T: BnConfig> PairingReader for Bn<T> {
+    fn parse_ptau_g1(bytes: &[u8], r_inv: &Self::BaseField) -> Result<Self::G1Affine, Error> {
+        let len = <Self::BaseField as PrimeField>::BigInt::NUM_LIMBS * 8;
+        let x = Self::BaseField::from_le_bytes_mod_order(&bytes[..len]) * *r_inv;
+        let y = Self::BaseField::from_le_bytes_mod_order(&bytes[len..]) * *r_inv;
+        let g1 = Self::G1Affine::new(x, y);
+        assert!(g1.is_on_curve(), "G1 must be on curve");
+        Ok(g1)
+    }
+
+    fn parse_ptau_g2(bytes: &[u8], r_inv: &Self::BaseField) -> Result<Self::G2Affine, Error> {
+        let len = <Self::BaseField as PrimeField>::BigInt::NUM_LIMBS * 8;
+        let x0 = Self::BaseField::from_le_bytes_mod_order(&bytes[..len]) * *r_inv;
+        let x1 = Self::BaseField::from_le_bytes_mod_order(&bytes[len..(len * 2)]) * *r_inv;
+        let x = Fp2::<T::Fp2Config>::new(x0, x1);
+        let y0 = Self::BaseField::from_le_bytes_mod_order(&bytes[(len * 2)..(len * 3)]) * *r_inv;
+        let y1 = Self::BaseField::from_le_bytes_mod_order(&bytes[(len * 3)..]) * *r_inv;
+        let y = Fp2::<T::Fp2Config>::new(y0, y1);
+        let g2 = Self::G2Affine::new(x, y);
+        assert!(g2.is_on_curve(), "G2 must be on curve");
+        Ok(g2)
+    }
+
     fn read_ptau_g1<R: Read>(
         reader: &mut R,
         r_inv: &Self::BaseField,

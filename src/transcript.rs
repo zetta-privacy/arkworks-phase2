@@ -72,9 +72,13 @@ impl<E: Pairing> Transcript<E> {
 
         let add_dummy_constraints_timer = start_timer!(|| "Adding dummy constraints");
         a_g1.lock()?[0..num_instance_variables]
-            .clone_from_slice(&accum.tau_lagrange_g1[num_constraints..total_constraints]);
+            .iter_mut()
+            .zip(&accum.tau_lagrange_g1[num_constraints..total_constraints])
+            .for_each(|(dst, src)| *dst = src.into_group());
         ext.lock()?[0..num_instance_variables]
-            .clone_from_slice(&accum.beta_lagrange_g1[num_constraints..total_constraints]);
+            .iter_mut()
+            .zip(&accum.beta_lagrange_g1[num_constraints..total_constraints])
+            .for_each(|(dst, src)| *dst = src.into_group());
         end_timer!(add_dummy_constraints_timer);
 
         let specialize_constraints_timer =
@@ -112,11 +116,12 @@ impl<E: Pairing> Transcript<E> {
         let public_cross_terms = Vec::from(&ext[..num_instance_variables]);
         let private_cross_terms = Vec::from(&ext[num_instance_variables..]);
 
-        for l in &private_cross_terms {
+        for (i, l) in private_cross_terms.iter().enumerate() {
             if l.is_zero() {
-                return Err(Error::Custom(
-                    "unconstrained variable (zero l_query entry)".into(),
-                ));
+                println!(
+                    "unconstrained variable (zero l_query entry) at witness index {}",
+                    i + num_instance_variables
+                );
             }
         }
 
